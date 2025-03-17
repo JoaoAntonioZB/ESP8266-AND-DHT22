@@ -94,7 +94,9 @@ int checkConfigFile() {
       
       //Pegar as variaveis do arquivo e colocar nas variaveis globais
         ssid = file.readStringUntil('\n');      // Obtém o SSID do formulário
+        ssid.trim();   // Remove \n, \r e espaços em branco
         senha = file.readStringUntil('\n');    // Obtém a senha do formulário
+        senha.trim(); // Remove \n, \r e espaços em branco
         ip = file.readStringUntil('\n');          // Obtém o IP do formulário
         mascara = file.readStringUntil('\n'); // Obtém a máscara do formulário
         gw = file.readStringUntil('\n');          // Obtém o gateway do formulário
@@ -581,6 +583,32 @@ void setup() {
   // Verifica se o arquivo de configuração existe e exibe seu conteúdo
   //checkConfigFile();
   if (checkConfigFile()){
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), password.c_str());  
+    
+    // Imprime o SSID e seu comprimento
+    Serial.print("SSID: ");
+    Serial.println(ssid);
+    Serial.print("Tamanho do SSID: ");
+    Serial.println(ssid.length());  // Usando .length() para obter o comprimento da String
+
+    // Imprime a senha e seu comprimento
+    Serial.print("Senha: ");
+    Serial.println(password);
+    Serial.print("Tamanho da senha: ");
+    Serial.println(password.length());  // Usando .length() para obter o comprimento da String
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+    }
+    Serial.println(WiFi.localIP());
+    Serial.println("---------------");
+    // Configurando IP
+    //IPAddress IP,GW,MASK,router;
+    //IP.fromString(ip);
+    //GW.fromString(gw);
+    //MASK.fromString(mascara);
+    //WiFi.config(IP,GW,MASK);
     // Inicializa o sensor DHT22
     dht.begin(); // Inicializa o sensor DHT22
     Serial.println("Sensor DHT22 inicializado");
