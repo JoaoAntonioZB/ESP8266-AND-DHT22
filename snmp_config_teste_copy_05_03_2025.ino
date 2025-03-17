@@ -48,6 +48,7 @@ IPAddress router; // Endereço IP do dispositivo SNMP (será configurado via ip_
 const char *community = "public";   // Comunidade SNMP (geralmente "public" ou "private")
 const int snmpVersion = 1;          // Versão do SNMP (1 para SNMPv1, 2 para SNMPv2c)
 
+
 // OIDs (Identificadores de Objeto)
 const char *oidTemperature = ".1.3.6.1.2.1.552769.1.1";  // OID para temperatura
 const char *oidHumidity = ".1.3.6.1.2.1.552759.1.2";     // OID para umidade
@@ -55,9 +56,11 @@ const char *oidHumidity = ".1.3.6.1.2.1.552759.1.2";     // OID para umidade
 
 
 // Objetos SNMP
-WiFiUDP udp;                                           // Objeto UDP para enviar e receber pacotes
+WiFiUDP udp; // Objeto UDP para enviar e receber pacotes SNMP
+const int snmpPort = 161; // Porta padrão do SNMP
 SNMPManager snmp = SNMPManager(community);             // Gerenciador SNMP para ouvir respostas
 SNMPGet snmpRequest = SNMPGet(community, snmpVersion); // Requisição SNMP para enviar consultas
+
 
 // Callbacks para os OIDs
 ValueCallback *callbackTemperature; // Callback para temperatura
@@ -514,8 +517,12 @@ void printVariableValues() {
   Serial.println("----- Dados do DHT22 -----");
   Serial.printf("Temperatura: %.2f °C\n", temperatureResponse);
   Serial.printf("Umidade Relativa: %.2f %%\n", humidityResponse);
+  Serial.println("---------------------------------------------------");
+  Serial.println("Configuração da Rede do servidor Zabbix:");
   Serial.println(ssid);
   Serial.println(senha);
+  Serial.println("---------------------------------------------------");
+  Serial.println("Configuração do Aparelho ESP8266:");
   Serial.println(ip);
   Serial.println(mascara);
   Serial.println(gw);
