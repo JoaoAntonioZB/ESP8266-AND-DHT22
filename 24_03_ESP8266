@@ -1,0 +1,781 @@
+#include <ESP8266WiFi.h>
+#include <LittleFS.h>
+#include <ESP8266WebServer.h>
+#include <DHT.h>                  // Biblioteca para o sensor DHT22
+#include <WiFiUdp.h>              // Biblioteca para comunicação UDP (SNMP)
+#include <SNMP_Agent.h>           // Biblioteca para gerenciamento SNMP
+#include <SNMPTrap.h>             // Biblioteca para envio de traps SNMP
+
+String ssid_AP = "ESP-Zabbix";
+String password = "12345678910";
+
+ESP8266WebServer server(80);  // Servidor web na porta 80
+
+// Variáveis para salvar dados da configuração
+String ssid = "";      // Obtém o SSID do formulário
+String senha = "";    // Obtém a senha do formulário
+String ip = "";          // Obtém o IP do formulário
+String mascara = ""; // Obtém a máscara do formulário
+String gw = "";          // Obtém o gateway do formulário
+String dns = "";        // Obtém o DNS do formulário
+String ip_zabbix = ""; // Obtém o IP do Zabbix do formulário
+
+// Caminho do arquivo de configuração
+const char *configFilePath = "/config.txt";
+
+// Pino do botão
+const int botaoPin = D2;
+
+void botao();
+
+
+// Variáveis para controle do botão
+bool buttonPressed = false; // Flag para indicar se o botão foi pressionado
+unsigned long buttonPressTime = 0;   // Tempo em que o botão foi pressionado
+
+// Configurações do DHT22
+#define DHTPIN D7         // Pino onde o DHT22 está conectado
+#define DHTTYPE DHT22      // Tipo do sensor (DHT22)
+DHT dht(DHTPIN, DHTTYPE);  // Inicializa o sensor DHT22
+
+// Variáveis para armazenar os dados do DHT22
+float temperatureResponse = 0; // Armazena a temperatura
+float humidityResponse = 0;    // Armazena a umidade relativa
+
+//************************************
+//* Informações do dispositivo SNMP  *
+//************************************
+IPAddress router; // Endereço IP do dispositivo SNMP (será configurado via ip_zabbix)
+const char *community = "public";   // Comunidade SNMP (geralmente "public" ou "private")
+const int snmpVersion = 1;          // Versão do SNMP (1 para SNMPv1, 2 para SNMPv2c)
+
+// OIDs (Identificadores de Objeto)
+const char *oidTemperature = ".1.3.6.1.2.1.552769.1.1";  // OID para temperatura
+const char *oidHumidity = ".1.3.6.1.2.1.552759.1.2";     // OID para umidade
+//************************************
+
+// Objetos SNMP
+WiFiUDP udp; // Objeto UDP para enviar e receber pacotes SNMP
+SNMPAgent snmp = SNMPAgent("public", "private"); // "public" para leitura, "private" para leitura/escrita
+
+// Numbers used to response to Get requests
+int changingNumber = 1;
+int temperaturaNumber = 0;
+int humidityNumber = 0;
+int settableNumber = 0;
+uint32_t tensOfMillisCounter = 0;
+
+// arbitrary data will be stored here to act as an OPAQUE data-type
+uint8_t* stuff = 0;
+
+
+// If we want to change the functionaality of an OID callback later, store them here.
+ValueCallback* changingNumberOID;
+ValueCallback* settableNumberOID;
+TimestampCallback* timestampCallbackOID;
+// Callbacks para os OIDs
+ValueCallback *TemperatureOID; // Callback para temperatura
+ValueCallback *HumidityOID;    // Callback para umidade
+ // Callback para temperatura
+
+
+// Variáveis para controle do intervalo de leitura
+unsigned long pollStart = 0;            // Tempo de início da última consulta
+unsigned long intervalBetweenPolls = 0; // Intervalo entre as consultas
+const int pollInterval = 10000;         // Intervalo de tempo entre as leituras (em milissegundos)
+
+// Variável para armazenar o tempo de atividade
+uint32_t uptime = 0;
+
+// Callback de tempo de atividade
+TimestampCallback* uptimeCallback;
+
+// Função para inicializar o LittleFS
+void initLittleFS() {
+  if (!LittleFS.begin()) {
+    Serial.println("Falha ao montar o LittleFS");
+    return;
+  }
+  Serial.println("LittleFS montado com sucesso");
+}
+
+// Função para verificar se o arquivo existe e exibir seu conteúdo
+int checkConfigFile() {
+  if (LittleFS.exists(configFilePath)) {
+    Serial.println("Arquivo config.txt existe.");
+
+    // Abre o arquivo para leitura
+    File file = LittleFS.open(configFilePath, "r");
+    if (!file) {
+      Serial.println("Falha ao abrir o arquivo para leitura.");
+      return 0;
+    }
+
+    // Exibe o conteúdo do arquivo
+    Serial.println("Conteúdo do arquivo config.txt:");
+    while (file.available()) {
+        ssid = file.readStringUntil('\n');      // Obtém o SSID do formulário
+        ssid.trim();   // Remove \n, \r e espaços em branco
+        senha = file.readStringUntil('\n');    // Obtém a senha do formulário
+        senha.trim(); // Remove \n, \r e espaços em branco
+        ip = file.readStringUntil('\n');          // Obtém o IP do formulário
+        mascara = file.readStringUntil('\n'); // Obtém a máscara do formulário
+        gw = file.readStringUntil('\n');          // Obtém o gateway do formulário
+        dns = file.readStringUntil('\n');        // Obtém o DNS do formulário
+        ip_zabbix = file.readStringUntil('\n'); // Obtém o IP do Zabbix do formulário
+    }
+    file.close();
+    return 1;
+  } else {
+    Serial.println("Arquivo config.txt não existe.");
+    return 0;
+  }
+}
+
+// Função para apagar o arquivo da memória flash
+void apagarArquivo() {
+  if (LittleFS.exists(configFilePath)) {
+    LittleFS.remove(configFilePath);
+    Serial.println("Arquivo config.txt apagado com sucesso.");
+  } else {
+    Serial.println("Arquivo config.txt não existe para ser apagado.");
+  }
+}
+
+// Função para salvar o SSID, senha, IP, máscara, gateway e DNS no arquivo de configuração
+void saveConfig(const String &ssid, const String &password, const String &ip, const String &mascara, const String &gw, const String &dns, const String &ip_zabbix) {
+  File file = LittleFS.open(configFilePath, "w");
+  if (!file) {
+    Serial.println("Falha ao abrir o arquivo para escrita");
+    return;
+  }
+
+  file.println(ssid);     // Salva o SSID
+  file.println(password); // Salva a senha
+  file.println(ip);       // Salva o IP
+  file.println(mascara);  // Salva a máscara
+  file.println(gw);       // Salva o gateway
+  file.println(dns);      // Salva o DNS
+  file.println(ip_zabbix); // Salva o IP do Zabbix
+  file.close();
+
+  Serial.println("Configuração salva:");
+  Serial.println("SSID: " + ssid);
+  Serial.println("Senha: " + password);
+  Serial.println("IP: " + ip);
+  Serial.println("Mascara: " + mascara);
+  Serial.println("GateWay: " + gw);
+  Serial.println("DNS: " + dns);
+  Serial.println("IP Zabbix: " + ip_zabbix);
+  // Verifica se o arquivo foi criado e exibe seu conteúdo
+  checkConfigFile();
+}
+
+// String HTML da página de configuração
+const char paginaConfiguracao[] PROGMEM = R"=====(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuração de Rede</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <form action="/submit" method="POST">
+        <div class="Titulo">
+            <div class="imagem"><img src="./image.png" alt=""></div>
+            <h1>Informe os Dados da Rede Desejada</h1>
+            <div class="barra-horizontal"></div>
+        </div>
+        
+        <div class="campo-input">
+            <label for="ssid">Nome do WiFi</label>
+            <input type="text" id="ssid" name="ssid"/>
+            
+            <label for="senha">Senha do WiFi</label>
+            <input type="password" id="senha" name="senha"/>
+        </div>
+        
+        <div class="input-dados-rede">
+            <label for="ip">IP</label>
+            <input type="text" id="ip" name="ip"/>
+            
+            <label for="mascara">Máscara</label>
+            <input type="text" id="mascara" name="mascara"/>
+
+            <label for="gw">Gateway</label>
+            <input type="text" id="gw" name="gw"/>
+
+            <label for="dns">DNS</label>
+            <input type="text" id="dns" name="dns"/>
+
+            <label for="ip_zabbix">IP Zabbix</label>
+            <input type="text" id="ip_zabbix" name="ip_zabbix"/>
+        </div>
+
+        <button type="submit" id="registrarBtn">Registrar</button>
+    </form>
+</body>
+</html>
+)=====";
+
+// String HTML da página de carregamento
+const char paginaCarregamento[] PROGMEM = R"=====(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Carregando...</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="carregar">
+        <div class="circle"></div>
+        <div class="circle"></div>
+        <div class="circle"></div>
+        <div class="shadow"></div>
+        <div class="shadow"></div>
+        <div class="shadow"></div>
+        <span>Carregando</span>
+    </div>
+    <script>
+        // Redireciona para a página de confirmação após 3 segundos
+        setTimeout(function() {
+            window.location.href = "/confirmacao.html";
+        }, 3000); // 3000ms = 3 segundos
+    </script>
+</body>
+</html>
+)=====";
+
+// String HTML da página de confirmação
+const char paginaConfirmacao[] PROGMEM = R"=====(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dados Salvos com Sucesso</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="Titulo">
+            <div class="imagem"><img src="./image.png" alt="Ícone de sucesso"></div>
+            <h1>Dados salvos com sucesso!</h1>
+            <div class="barra-horizontal"></div>
+        </div>
+    </div>
+    <script>
+        // Redireciona para a página inicial após 3 segundos
+        setTimeout(function() {
+            window.location.href = "/";
+        }, 3000); // 3000ms = 3 segundos
+    </script>
+</body>
+</html>
+)=====";
+
+// String CSS
+const char styleCSS [] PROGMEM = R"=====(
+@font-face {
+    font-family: Marriweather;
+    src: url(./Merriweather/Merriweather-Regular.ttf);
+}
+
+@font-face {
+    font-family: Montserrat;
+    src: url(./Montserrat/Montserrat-VariableFont_wght.ttf);
+}
+
+:root {
+    --cor-de-fundo: #b9b9d8;
+    --cor-ponto: #1351b4;
+    --tamanho: 5px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: "Montserrat", sans-serif;
+    color: #404040;
+    background-color: var(--cor-de-fundo);
+    display: flex;
+    height: 100vh;
+    justify-content: center;
+    align-items: center;
+}
+
+form {
+    background-color: white;
+    padding: 50px 100px;
+    border-radius: 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+button {
+    padding: 10px 20px;
+    align-self: center;
+    border-radius: 30px;
+    background-image: linear-gradient(#256a8a, #3393c1);
+    border: solid 1px #256a8a;
+    border-right-width: 2px;
+    border-bottom-width: 2px;
+    font-size: 16px;
+    color: white;
+    font-weight: 700;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+button:hover {
+    background-image: linear-gradient(#3393c1, #256a8a);
+}
+
+input {
+    padding: 10px 20px;
+    border-radius: 15px;
+    border: none;
+    background-color: #f1f1f1;
+    font-family: "Montserrat", sans-serif;
+}
+
+h1 {
+    font-size: 24px;
+    font-family: "Marriweather", serif;
+    text-align: center;
+}
+
+.barra-horizontal {
+    background-color: var(--cor-ponto);
+    height: 5px;
+    width: 100%;
+    margin: 10px 0;
+}
+
+.campo-input {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    font-family: "Montserrat", sans-serif;
+}
+
+.Titulo {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-family: "Marriweather", serif;
+    align-items: center;
+}
+
+.input-dados-rede {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    font-family: "Montserrat", sans-serif;
+}
+
+label {
+    text-align: center;
+    padding-top: 8px;
+    font-family: "Montserrat", sans-serif;
+}
+
+.imagem {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Estilos para a página de carregamento */
+.carregar {
+    width: 200px;
+    height: 60px;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    opacity: 1;
+}
+
+.circle {
+    width: 20px;
+    height: 20px;
+    position: absolute;
+    border-radius: 50%;
+    background-color: var(--cor-ponto);
+    left: 15%;
+    animation: circle .5s alternate infinite ease;
+}
+
+@keyframes circle {
+    0% {
+        top: 60px;
+        height: 5px;
+        border-radius: 50px 50px 25px 25px;
+        transform: scaleX(1.7);
+    }
+    40% {
+        height: 20px;
+        border-radius: 50%;
+        transform: scaleX(1);
+    }
+    100% {
+        top: 0%;
+    }
+}
+
+.circle:nth-child(2) {
+    left: 45%;
+    animation-delay: .2s;
+}
+
+.circle:nth-child(3) {
+    left: auto;
+    right: 15%;
+    animation-delay: .3s;
+}
+
+.shadow {
+    width: 20px;
+    height: 4px;
+    border-radius: 50%;
+    background-color: rgba(0, 0, 0, .5);
+    position: absolute;
+    top: 62px;
+    transform-origin: 50%;
+    z-index: 1;
+    left: 15%;
+    filter: blur(1px);
+    animation: shadow .5s alternate infinite ease;
+}
+
+@keyframes shadow {
+    0% {
+        transform: scaleX(1.5);
+    }
+    40% {
+        transform: scaleX (1);
+        opacity: .7;
+    }
+    100% {
+        transform: scaleX(.2);
+    }
+}
+
+.shadow:nth-child(4) {
+    left: 45%;
+    animation-delay: .2s;
+}
+
+.shadow:nth-child(5) {
+    left: auto;
+    right: 15%;
+    animation-delay: .3s;
+}
+
+.carregar span {
+    position: absolute;
+    top: 75px;
+    font-family: 'Lato', sans-serif;
+    font-size: 20px;
+    letter-spacing: 12px;
+    color: var(--cor-ponto);
+})=====";
+
+// Função para ler os dados do DHT22
+void readDHT22() {
+  temperatureResponse = dht.readTemperature(); // Lê a temperatura em Celsius
+  humidityResponse = dht.readHumidity();       // Lê a umidade relativa
+
+  // Verifica se a leitura foi bem-sucedida
+  if (isnan(temperatureResponse) || isnan(humidityResponse)) {
+    Serial.println("Falha ao ler o sensor DHT22!");
+    return;
+  }
+
+  temperaturaNumber = (int)(temperatureResponse * 100);
+  humidityNumber = (int)(humidityResponse * 100);
+}
+
+// Função para enviar traps SNMP
+void sendSNMPTrap() {
+  // Converte o ip_zabbix (String) para IPAddress
+  IPAddress destinationIP;
+  if (!destinationIP.fromString(ip_zabbix)) {
+    Serial.println("Erro ao converter IP do Zabbix. Verifique o formato do IP no arquivo config.txt.");
+    return;
+  }
+
+}
+
+// Função para servir a página de configuração
+void handleConfigPage() {
+  server.send(200, "text/html", paginaConfiguracao);  // Envia o HTML da página de configuração
+}
+
+// Função para servir a página de carregamento
+void handleLoadingPage() {
+  server.send(200, "text/html", paginaCarregamento);  // Envia o HTML da página de carregamento
+}
+
+// Função para servir a página de confirmação
+void handleConfirmationPage() {
+  server.send(200, "text/html", paginaConfirmacao);  // Envia o HTML da página de confirmação
+}
+
+// Função para servir o arquivo CSS
+void handleCSS() {
+  server.send(200, "text/css", styleCSS);  // Envia o CSS
+}
+
+// Função para processar o formulário
+void handleFormSubmit() {
+  ssid = server.arg("ssid");
+  senha = server.arg("senha");
+  ip = server.arg("ip");
+  mascara = server.arg("mascara");
+  gw = server.arg("gw");
+  dns = server.arg("dns");
+  ip_zabbix = server.arg("ip_zabbix");
+
+  saveConfig(ssid, senha, ip, mascara, gw, dns, ip_zabbix);
+  server.sendHeader("Location", "/carregamento.html");
+  server.send(303);
+}
+
+
+
+// Função para imprimir os valores coletados
+void printVariableValues() {
+  Serial.println("----- Dados do DHT22 -----");
+  Serial.printf("Temperatura: %.2f °C\n", temperatureResponse);
+  Serial.printf("Umidade Relativa: %.2f %%\n", humidityResponse);
+  Serial.println("---------------------------------------------------");
+  Serial.println("Configuração da Rede do servidor Zabbix:");
+  Serial.println(ssid);
+  Serial.println(senha);
+  Serial.println("---------------------------------------------------");
+  Serial.println("Configuração do Aparelho ESP8266:");
+  Serial.println(ip);
+  Serial.println(mascara);
+  Serial.println(gw);
+  Serial.println(dns);
+  Serial.println(ip_zabbix);
+}
+SNMPTrap* settableNumberTrap = new SNMPTrap("public", SNMP_VERSION_2C);
+char* changingString;
+void setup() {
+  Serial.begin(115200);
+  delay(100); // Aguarda a inicialização do Serial
+  Serial.println("\n\n"); // Limpa o monitor serial
+  Serial.println("Iniciando..."); // Sua mensagem personalizada
+
+  // Configura o pino do botão como entrada com pull-up interno
+  pinMode(botaoPin, INPUT);
+
+  // Inicializa o LittleFS
+  initLittleFS();
+
+  // Verifica se o arquivo de configuração existe e exibe seu conteúdo
+  if (checkConfigFile()) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), senha.c_str());  
+    
+    // Imprime o SSID e seu comprimento
+    Serial.print("SSID: ");
+    Serial.println(ssid);
+    Serial.print("Tamanho do SSID: ");
+    Serial.println(ssid.length());  // Usando .length() para obter o comprimento da String
+
+    // Imprime a senha e seu comprimento
+    Serial.print("Senha: ");
+    Serial.println(senha);
+    Serial.print("Tamanho da senha: ");
+    Serial.println(password.length());  // Usando .length() para obter o comprimento da String
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+     botao();
+    }
+    Serial.println(WiFi.localIP());
+    Serial.println("---------------");
+    dht.begin(); // Inicializa o sensor DHT22
+    Serial.println("Sensor DHT22 inicializado");
+
+    // Inicializa o SNMP
+    snmp.setUDP(&udp); // Passa o objeto UDP para o SNMP
+    snmp.begin();      // Inicia o gerenciador SNMP
+    
+    // setup our OPAQUE data-type
+    stuff = (uint8_t*)malloc(4);
+    stuff[0] = 1;
+    stuff[1] = 2;
+    stuff[2] = 24;
+    stuff[3] = 67;
+
+ 
+
+    // add 'callback' for an OID - pointer to an integer
+    changingNumberOID = snmp.addIntegerHandler(".1.3.6.1.4.1.5.0", &changingNumber);
+    
+    TemperatureOID = snmp.addIntegerHandler(".1.3.6.1.2.1.552769.1.1", &temperaturaNumber);
+    
+    HumidityOID = snmp.addIntegerHandler(".1.3.6.1.2.1.552769.1.2", &humidityNumber);
+
+    settableNumberOID = snmp.addIntegerHandler(".1.3.6.1.4.1.5.1", &settableNumber, true);
+
+    
+    changingString = (char*)malloc(25 * sizeof(char));
+    snprintf(changingString, 25, "This is changeable");
+    snmp.addReadWriteStringHandler(".1.3.6.1.4.1.5.12", &changingString, 25, true);
+
+   
+    // Setup SNMP TRAP
+    // The SNMP Trap spec requires an uptime counter to be sent along with the trap.
+    timestampCallbackOID = (TimestampCallback*)snmp.addTimestampHandler(".1.3.6.1.2.1.1.3.0", &tensOfMillisCounter);
+
+    settableNumberTrap->setUDP(&udp); // give a pointer to our UDP object
+    settableNumberTrap->setTrapOID(new OIDType(".1.3.6.1.2.1.552769.1.2")); // OID of the trap
+    settableNumberTrap->setSpecificTrap(1); 
+
+    // Set the uptime counter to use in the trap (required)
+    settableNumberTrap->setUptimeCallback(timestampCallbackOID);
+
+    // Set some previously set OID Callbacks to send these values with the trap (optional)
+    settableNumberTrap->addOIDPointer(changingNumberOID);
+    settableNumberTrap->addOIDPointer(TemperatureOID);
+    settableNumberTrap->addOIDPointer(HumidityOID);
+    settableNumberTrap->addOIDPointer(settableNumberOID);
+
+    settableNumberTrap->setIP(WiFi.localIP()); // Set our Source IP
+
+    // Ensure to sortHandlers after adding/removing and OID callbacks - this makes snmpwalk work
+    snmp.sortHandlers();
+  } else {
+    // Carregar modo Configuração
+    // Configura o ponto de acesso WiFi
+    Serial.print("Configurando access point...");
+    WiFi.softAP(ssid_AP, password);  // Cria o ponto de acesso
+
+    IPAddress myIP = WiFi.softAPIP();  // Obtém o IP do AP
+    Serial.print("AP IP address: ");
+    Serial.println(myIP);  // Exibe o IP no serial
+    
+    // Configura as rotas do servidor
+    server.on("/", handleConfigPage);  // Rota para a página de configuração
+    server.on("/submit", handleFormSubmit);  // Rota para processar o formulário
+    server.on("/carregamento.html", handleLoadingPage);  // Rota para a página de carregamento
+    server.on("/confirmacao.html", handleConfirmationPage);  // Rota para a página de confirmação
+    server.on("/style.css", handleCSS);  // Rota para o arquivo CSS
+
+    server.begin();  // Inicia o servidor web
+    Serial.println("Servidor HTTP iniciado");  // Log no serial
+  }
+}
+
+void loop() {
+  botao();
+
+  server.handleClient();  // Mantém o servidor ativo
+
+
+  // Controle do intervalo de leitura
+  unsigned long currentMillis = millis();
+  if (currentMillis - pollStart >= pollInterval) {
+    pollStart = currentMillis; // Atualiza o tempo de início da próxima leitura
+    readDHT22();               // Lê os dados do sensor DHT22
+    sendSNMPTrap();            // Envia traps SNMP se necessário
+    printVariableValues();     // Imprime os valores coletados
+  } 
+
+
+
+   snmp.loop(); // Deve ser chamado frequentemente para manter o agente SNMP ativo
+
+// Verifica se ocorreu uma operação SET no OID configurável
+if(settableNumberOID != nullptr && settableNumberOID->setOccurred) {
+    
+    Serial.printf("[SNMP] Valor recebido via SET: %i\n", settableNumber);
+    
+    // Configura o tipo de trap baseado no valor recebido
+    if(settableNumber % 2 == 0) {
+        // Envia um INFORM SNMPv2 (requer confirmação)
+        settableNumberTrap->setVersion(SNMP_VERSION_2C);
+        settableNumberTrap->setInform(true);
+        Serial.println("[SNMP] Configurando trap como SNMPv2 INFORM");
+    } else {
+        // Envia um trap SNMPv1 normal
+        settableNumberTrap->setVersion(SNMP_VERSION_1);
+        settableNumberTrap->setInform(false);
+        Serial.println("[SNMP] Configurando trap como SNMPv1");
+    }
+
+    // Reseta o flag de SET
+    settableNumberOID->resetSetOccurred();
+
+    // Verifica se o IP do Zabbix foi configurado
+    if(ip_zabbix.length() > 0) {
+        IPAddress destinationIP;
+        if(destinationIP.fromString(ip_zabbix)) {
+            // Envia o trap para o IP do Zabbix
+            Serial.printf("[SNMP] Enviando trap para %s\n", ip_zabbix.c_str());
+            
+            uint32_t requestId = snmp.sendTrapTo(
+                settableNumberTrap, 
+                destinationIP, 
+                true,    // usar DNS se necessário
+                2,       // número de tentativas
+                5000     // timeout em ms
+            );
+            
+            if(requestId != INVALID_SNMP_REQUEST_ID) {
+                Serial.println("[SNMP] Trap enviado com sucesso");
+            } else {
+                Serial.println("[SNMP] Falha ao enviar trap");
+            }
+        } else {
+            Serial.println("[SNMP] Erro: IP do Zabbix inválido");
+        }
+    } else {
+        Serial.println("[SNMP] Aviso: IP do Zabbix não configurado");
+    }
+}
+
+  // Atualiza contadores
+  changingNumber++;
+  tensOfMillisCounter = millis() / 10;
+}
+void botao() {
+    // Verifica o estado do botão com debounce
+  int buttonState = digitalRead(botaoPin);
+
+  if (buttonState == HIGH) { // Botão pressionado (HIGH com pull-down)
+    if (!buttonPressed) {
+      buttonPressed = true;
+      buttonPressTime = millis(); // Registra o tempo em que o botão foi pressionado
+    } else if (millis() - buttonPressTime >= 10000) {
+      apagarArquivo();  // Apaga o arquivo da memória flash
+      Serial.println("Arquivo apagado com sucesso!");
+      ESP.restart();
+      buttonPressed = false; // Reseta a flag
+    }
+  } else { // Botão não pressionado (LOW com pull-down)
+    if (buttonPressed) {
+      // Se o botão foi solto antes de completar 10 segundos, cancela a ação
+      Serial.println("Desculpe, mas não posso apagar nada, segure o botão por 10 segundos");
+      buttonPressed = false; // Reseta a flag
+    }
+  }
+  
+}
