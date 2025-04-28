@@ -21,7 +21,7 @@ String dns = "";        // Obtém o DNS do formulário
 String ip_zabbix = ""; // Obtém o IP do Zabbix do formulário
 
 // Caminho do arquivo de configuração
-const char *configFilePath = "/config.txt";
+const char *configArquivo = "/config.txt";
 
 // Pino do botão
 const int botaoPin = D2;
@@ -101,29 +101,17 @@ void initLittleFS() {
 
 // Função para verificar se o arquivo existe e exibir seu conteúdo
 int checkConfigFile() {
-  if (LittleFS.exists(configFilePath)) {
+  if (LittleFS.exists(configArquivo)) {
     Serial.println("Arquivo config.txt existe.");
 
     // Abre o arquivo para leitura
-    File file = LittleFS.open(configFilePath, "r");
+    File file = LittleFS.open(configArquivo, "r");
     if (!file) {
       Serial.println("Falha ao abrir o arquivo para leitura.");
       return 0;
     }
 
-    // Exibe o conteúdo do arquivo
-    Serial.println("Conteúdo do arquivo config.txt:");
-    while (file.available()) {
-        ssid = file.readStringUntil('\n');      // Obtém o SSID do formulário
-        ssid.trim();   // Remove \n, \r e espaços em branco
-        senha = file.readStringUntil('\n');    // Obtém a senha do formulário
-        senha.trim(); // Remove \n, \r e espaços em branco
-        ip = file.readStringUntil('\n');          // Obtém o IP do formulário
-        mascara = file.readStringUntil('\n'); // Obtém a máscara do formulário
-        gw = file.readStringUntil('\n');          // Obtém o gateway do formulário
-        dns = file.readStringUntil('\n');        // Obtém o DNS do formulário
-        ip_zabbix = file.readStringUntil('\n'); // Obtém o IP do Zabbix do formulário
-    }
+
     file.close();
     return 1;
   } else {
@@ -134,8 +122,8 @@ int checkConfigFile() {
 
 // Função para apagar o arquivo da memória flash
 void apagarArquivo() {
-  if (LittleFS.exists(configFilePath)) {
-    LittleFS.remove(configFilePath);
+  if (LittleFS.exists(configArquivo)) {
+    LittleFS.remove(configArquivo);
     Serial.println("Arquivo config.txt apagado com sucesso.");
   } else {
     Serial.println("Arquivo config.txt não existe para ser apagado.");
@@ -144,7 +132,7 @@ void apagarArquivo() {
 
 // Função para salvar o SSID, senha, IP, máscara, gateway e DNS no arquivo de configuração
 void saveConfig(const String &ssid, const String &password, const String &ip, const String &mascara, const String &gw, const String &dns, const String &ip_zabbix) {
-  File file = LittleFS.open(configFilePath, "w");
+  File file = LittleFS.open(configArquivo, "w");
   if (!file) {
     Serial.println("Falha ao abrir o arquivo para escrita");
     return;
@@ -556,23 +544,7 @@ void handleFormSubmit() {
 
 
 
-// Função para imprimir os valores coletados
-void printVariableValues() {
-  Serial.println("----- Dados do DHT22 -----");
-  Serial.printf("Temperatura: %.2f °C\n", temperatureResponse);
-  Serial.printf("Umidade Relativa: %.2f %%\n", humidityResponse);
-  Serial.println("---------------------------------------------------");
-  Serial.println("Configuração da Rede do servidor Zabbix:");
-  Serial.println(ssid);
-  Serial.println(senha);
-  Serial.println("---------------------------------------------------");
-  Serial.println("Configuração do Aparelho ESP8266:");
-  Serial.println(ip);
-  Serial.println(mascara);
-  Serial.println(gw);
-  Serial.println(dns);
-  Serial.println(ip_zabbix);
-}
+
 SNMPTrap* settableNumberTrap = new SNMPTrap("olimpo", SNMP_VERSION_2C);
 char* changingString;
 void setup() {
@@ -591,18 +563,7 @@ void setup() {
   if (checkConfigFile()) {
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), senha.c_str());  
-    
-    // Imprime o SSID e seu comprimento
-    Serial.print("SSID: ");
-    Serial.println(ssid);
-    Serial.print("Tamanho do SSID: ");
-    Serial.println(ssid.length());  // Usando .length() para obter o comprimento da String
-
-    // Imprime a senha e seu comprimento
-    Serial.print("Senha: ");
-    Serial.println(senha);
-    Serial.print("Tamanho da senha: ");
-    Serial.println(password.length());  // Usando .length() para obter o comprimento da String
+  
     while (WiFi.status() != WL_CONNECTED) {
       delay(500);
       Serial.print(".");
