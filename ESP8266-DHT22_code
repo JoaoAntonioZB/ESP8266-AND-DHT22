@@ -51,7 +51,7 @@ const int snmpVersion = 2;          // Versão do SNMP (1 para SNMPv1, 2 para SN
 
 // OIDs (Identificadores de Objeto)
 const char *oidTemperature = ".1.3.6.1.2.1.552769.1.1";  // OID para temperatura
-const char *oidHumidity = ".1.3.6.1.2.1.552759.1.2";     // OID para umidade
+const char *oidHumidity = ".1.3.6.1.2.1.552769.1.2";     // OID para umidade
 //************************************
 
 // Objetos SNMP
@@ -103,7 +103,7 @@ void initLittleFS() {
 int checkConfigFile() {
   if (LittleFS.exists(configArquivo)) {
     Serial.println("Arquivo config.txt existe.");
-
+   
     // Abre o arquivo para leitura
     File file = LittleFS.open(configArquivo, "r");
     if (!file) {
@@ -483,17 +483,17 @@ label {
 
 // Função para ler os dados do DHT22
 void readDHT22() {
-  temperatureResponse = dht.readTemperature(); // Lê a temperatura em Celsius
-  humidityResponse = dht.readHumidity();       // Lê a umidade relativa
-
-  // Verifica se a leitura foi bem-sucedida
-  if (isnan(temperatureResponse) || isnan(humidityResponse)) {
-    Serial.println("Falha ao ler o sensor DHT22!");
-    return;
-  }
-
+  temperatureResponse = dht.readTemperature();
+  humidityResponse = dht.readHumidity();
+  
+  Serial.print("Temperatura: "); Serial.println(temperatureResponse);
+  Serial.print("Umidade: "); Serial.println(humidityResponse);
+  
   temperaturaNumber = (int)(temperatureResponse * 100);
   humidityNumber = (int)(humidityResponse * 100);
+  
+  Serial.print("Temperatura (SNMP): "); Serial.println(temperaturaNumber);
+  Serial.print("Umidade (SNMP): "); Serial.println(humidityNumber);
 }
 
 // Função para enviar traps SNMP
@@ -543,8 +543,57 @@ void handleFormSubmit() {
 }
 
 
+void readConfigFile() {
+  if (LittleFS.exists(configArquivo)) {
+    File file = LittleFS.open(configArquivo, "r");
+    if (file) {
+      ssid = file.readStringUntil('\n');
+      ssid.trim();
+      senha = file.readStringUntil('\n');
+      senha.trim();
+      ip = file.readStringUntil('\n');
+      ip.trim();
+      mascara = file.readStringUntil('\n');
+      mascara.trim();
+      gw = file.readStringUntil('\n');
+      gw.trim();
+      dns = file.readStringUntil('\n');
+      dns.trim();
+      ip_zabbix = file.readStringUntil('\n');
+      ip_zabbix.trim();
+      file.close();
+      
+      Serial.println("Configuração lida do arquivo:");
+      Serial.println("SSID: " + ssid);
+      Serial.println("Senha: " + senha);
+      Serial.println("IP: " + ip);
+      Serial.println("Mascara: " + mascara);
+      Serial.println("GateWay: " + gw);
+      Serial.println("DNS: " + dns);
+      Serial.println("IP Zabbix: " + ip_zabbix);
+    }
+  }
+}
 
+// Função para iniciar o modo AP
+void iniciarModoAP() {
+  Serial.print("Configurando access point...");
+  WiFi.softAP(ssid_AP, password);  // Cria o ponto de acesso
 
+  IPAddress myIP = WiFi.softAPIP();  // Obtém o IP do AP
+  Serial.print("AP IP address: ");
+  Serial.println(myIP);  // Exibe o IP no serial
+  
+  // Configura as rotas do servidor
+  server.on("/", handleConfigPage);  // Rota para a página de configuração
+  server.on("/submit", handleFormSubmit);  // Rota para processar o formulário
+  server.on("/carregamento.html", handleLoadingPage);  // Rota para a página de carregamento
+  server.on("/confirmacao.html", handleConfirmationPage);  // Rota para a página de confirmação
+  server.on("/style.css", handleCSS);  // Rota para o arquivo CSS
+
+  server.begin();  // Inicia o servidor web
+  Serial.println("Servidor HTTP iniciado");  // Log no serial
+}
 SNMPTrap* settableNumberTrap = new SNMPTrap("olimpo", SNMP_VERSION_2C);
 char* changingString;
 void setup() {
@@ -559,89 +608,101 @@ void setup() {
   // Inicializa o LittleFS
   initLittleFS();
 
-  // Verifica se o arquivo de configuração existe e exibe seu conteúdo
-  if (checkConfigFile()) {
+  // Lê o arquivo de configuração (nova função adicionada)
+  readConfigFile();
+
+  // Verifica se há configuração WiFi disponível
+  if (ssid.length() > 0) {
     WiFi.mode(WIFI_STA);
+    
+    // Configura IP estático se os dados estiverem disponíveis
+    if (ip.length() > 0 && mascara.length() > 0 && gw.length() > 0) {
+      IPAddress staticIP, subnet, gateway, dnsIP;
+      
+      if (staticIP.fromString(ip) && subnet.fromString(mascara) && gateway.fromString(gw)) {
+        if (dns.length() > 0 && dnsIP.fromString(dns)) {
+          WiFi.config(staticIP, gateway, subnet, dnsIP);
+        } else {
+          WiFi.config(staticIP, gateway, subnet);
+        }
+        Serial.println("Configuração de IP estático aplicada");
+      }
+    }
+    
+    Serial.println("Conectando ao WiFi: " + ssid);
     WiFi.begin(ssid.c_str(), senha.c_str());  
   
-    while (WiFi.status() != WL_CONNECTED) {
+    int tentativas = 0;
+    while (WiFi.status() != WL_CONNECTED && tentativas < 20) {
       delay(500);
       Serial.print(".");
-     botao();
+      tentativas++;
+      botao();
     }
-    Serial.println(WiFi.localIP());
-    Serial.println("---------------");
-    dht.begin(); // Inicializa o sensor DHT22
-    Serial.println("Sensor DHT22 inicializado");
-
-    // Inicializa o SNMP
-    snmp.setUDP(&udp); // Passa o objeto UDP para o SNMP
-    snmp.begin();      // Inicia o gerenciador SNMP
     
-    // setup our OPAQUE data-type
-    stuff = (uint8_t*)malloc(4);
-    stuff[0] = 1;
-    stuff[1] = 2;
-    stuff[2] = 24;
-    stuff[3] = 67;
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\nConectado com sucesso!");
+      Serial.print("IP: ");
+      Serial.println(WiFi.localIP());
+      Serial.println("---------------");
+      
+      dht.begin(); // Inicializa o sensor DHT22
+      Serial.println("Sensor DHT22 inicializado");
 
- 
+      // Inicializa o SNMP
+      snmp.setUDP(&udp); // Passa o objeto UDP para o SNMP
+      snmp.begin();      // Inicia o gerenciador SNMP
+      
+      // setup our OPAQUE data-type
+      stuff = (uint8_t*)malloc(4);
+      stuff[0] = 1;
+      stuff[1] = 2;
+      stuff[2] = 24;
+      stuff[3] = 67;
 
-    // add 'callback' for an OID - pointer to an integer
-    changingNumberOID = snmp.addIntegerHandler(".1.3.6.1.4.1.5.0", &changingNumber);
-    
-    TemperatureOID = snmp.addIntegerHandler(".1.3.6.1.2.1.552769.1.1", &temperaturaNumber);
-    
-    HumidityOID = snmp.addIntegerHandler(".1.3.6.1.2.1.552769.1.2", &humidityNumber);
+      // add 'callback' for an OID - pointer to an integer
+      changingNumberOID = snmp.addIntegerHandler(".1.3.6.1.4.1.5.0", &changingNumber);
+      
+      TemperatureOID = snmp.addIntegerHandler(".1.3.6.1.2.1.552769.1.1", &temperaturaNumber);
+      
+      HumidityOID = snmp.addIntegerHandler(".1.3.6.1.2.1.552769.1.2", &humidityNumber);
 
-    settableNumberOID = snmp.addIntegerHandler(".1.3.6.1.4.1.5.1", &settableNumber, true);
+      settableNumberOID = snmp.addIntegerHandler(".1.3.6.1.4.1.5.1", &settableNumber, true);
 
-    
-    changingString = (char*)malloc(25 * sizeof(char));
-    snprintf(changingString, 25, "This is changeable");
-    snmp.addReadWriteStringHandler(".1.3.6.1.4.1.5.12", &changingString, 25, true);
+      
+      changingString = (char*)malloc(25 * sizeof(char));
+      snprintf(changingString, 25, "This is changeable");
+      snmp.addReadWriteStringHandler(".1.3.6.1.4.1.5.12", &changingString, 25, true);
 
-   
-    // Setup SNMP TRAP
-    // The SNMP Trap spec requires an uptime counter to be sent along with the trap.
-    timestampCallbackOID = (TimestampCallback*)snmp.addTimestampHandler(".1.3.6.1.2.1.1.3.0", &tensOfMillisCounter);
+     
+      // Setup SNMP TRAP
+      // The SNMP Trap spec requires an uptime counter to be sent along with the trap.
+      timestampCallbackOID = (TimestampCallback*)snmp.addTimestampHandler(".1.3.6.1.2.1.1.3.0", &tensOfMillisCounter);
 
-    settableNumberTrap->setUDP(&udp); // give a pointer to our UDP object
-    settableNumberTrap->setTrapOID(new OIDType(".1.3.6.1.2.1.552769.1.2")); // OID of the trap
-    settableNumberTrap->setSpecificTrap(1); 
+      settableNumberTrap->setUDP(&udp); // give a pointer to our UDP object
+      settableNumberTrap->setTrapOID(new OIDType(".1.3.6.1.2.1.552769.1.2")); // OID of the trap
+      settableNumberTrap->setSpecificTrap(1); 
 
-    // Set the uptime counter to use in the trap (required)
-    settableNumberTrap->setUptimeCallback(timestampCallbackOID);
+      // Set the uptime counter to use in the trap (required)
+      settableNumberTrap->setUptimeCallback(timestampCallbackOID);
 
-    // Set some previously set OID Callbacks to send these values with the trap (optional)
-    settableNumberTrap->addOIDPointer(changingNumberOID);
-    settableNumberTrap->addOIDPointer(TemperatureOID);
-    settableNumberTrap->addOIDPointer(HumidityOID);
-    settableNumberTrap->addOIDPointer(settableNumberOID);
+      // Set some previously set OID Callbacks to send these values with the trap (optional)
+      settableNumberTrap->addOIDPointer(changingNumberOID);
+      settableNumberTrap->addOIDPointer(TemperatureOID);
+      settableNumberTrap->addOIDPointer(HumidityOID);
+      settableNumberTrap->addOIDPointer(settableNumberOID);
 
-    settableNumberTrap->setIP(WiFi.localIP()); // Set our Source IP
+      settableNumberTrap->setIP(WiFi.localIP()); // Set our Source IP
 
-    // Ensure to sortHandlers after adding/removing and OID callbacks - this makes snmpwalk work
-    snmp.sortHandlers();
+      // Ensure to sortHandlers after adding/removing and OID callbacks - this makes snmpwalk work
+      snmp.sortHandlers();
+    } else {
+      Serial.println("\nFalha ao conectar ao WiFi. Iniciando modo AP...");
+      iniciarModoAP();
+    }
   } else {
-    // Carregar modo Configuração
-    // Configura o ponto de acesso WiFi
-    Serial.print("Configurando access point...");
-    WiFi.softAP(ssid_AP, password);  // Cria o ponto de acesso
-
-    IPAddress myIP = WiFi.softAPIP();  // Obtém o IP do AP
-    Serial.print("AP IP address: ");
-    Serial.println(myIP);  // Exibe o IP no serial
-    
-    // Configura as rotas do servidor
-    server.on("/", handleConfigPage);  // Rota para a página de configuração
-    server.on("/submit", handleFormSubmit);  // Rota para processar o formulário
-    server.on("/carregamento.html", handleLoadingPage);  // Rota para a página de carregamento
-    server.on("/confirmacao.html", handleConfirmationPage);  // Rota para a página de confirmação
-    server.on("/style.css", handleCSS);  // Rota para o arquivo CSS
-
-    server.begin();  // Inicia o servidor web
-    Serial.println("Servidor HTTP iniciado");  // Log no serial
+    Serial.println("Nenhuma configuração WiFi encontrada. Iniciando modo AP...");
+    iniciarModoAP();
   }
 }
 
@@ -656,7 +717,7 @@ void loop() {
     pollStart = currentMillis; // Atualiza o tempo de início da próxima leitura
     readDHT22();               // Lê os dados do sensor DHT22
     sendSNMPTrap();            // Envia traps SNMP se necessário
-    printVariableValues();     // Imprime os valores coletados
+    //printVariableValues();     // Imprime os valores coletados
   }
    // Processa as requisições SNMP
 snmp.loop(); // Deve ser chamado frequentemente para manter o agente SNMP ativo
